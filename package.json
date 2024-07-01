@@ -1,0 +1,15 @@
+{
+  "name": "server",
+  "version": "0.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "author": "",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.2.0"
+  },
+  "license": "ISC",
+  "description": ""
+}

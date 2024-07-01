@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body>
+    <button onclick="toggle()">Play</button>
+    <br>
+    <select multiple onchange="play(this.options[this.selectedIndex].value)">
+        <option value="gubkabob">Губка Боб</option>
+        <option value="vicecity">Вайс Сити</option>
+    </select>
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+       var socket = io();
+
+        const videos = new Map();
+
+        videos.set("gubkabob", "file:///D:/git-repositories/Unity-VR-360Player/Assets/_Videos/output_injected.mp4");
+        videos.set("vicecity", "file:///D:/git-repositories/Unity-VR-360Player/Assets/_Videos/vicecity.mp4");
+
+        function play(value){
+            socket.emit('play',videos.get(value));
+        }
+
+        function toggle() {
+            socket.emit('toggle');
+        }
+
+
+    </script>
+</body>
+</html>
