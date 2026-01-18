@@ -10,7 +10,7 @@ module.exports= function initSockets(server) {
   });
 
 
-  
+  let lastSrc = null;
 
   io.on('connection', (socket) => {
     console.log('a user connected');
@@ -30,6 +30,7 @@ module.exports= function initSockets(server) {
     socket.on('src_js', (src) => {
       console.log(src);
       console.log(timer.getElapsedTime());
+      lastSrc = src;
       io.emit('src', src, timer.getElapsedTime()/1000);
     })
 
@@ -41,6 +42,10 @@ module.exports= function initSockets(server) {
     socket.on('iamuser', () => {
       console.log('iamuser');
       io.emit('user-is-connected');
+
+      if (lastSrc) {
+        socket.emit('src', lastSrc, timer.getElapsedTime()/1000);
+      }
     })
 
     socket.on('reset', () => {
@@ -50,7 +55,6 @@ module.exports= function initSockets(server) {
 
     socket.on('disconnect', () => {
       console.log('user disconnected');
-      timer.resetStopwatch();
     })
   });
 
