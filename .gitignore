@@ -119,3 +119,6 @@ movies.json
 .yarn/install-state.gz
 .pnp.*
 
+!static/
+!static/**
+
