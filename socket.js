@@ -12,9 +12,14 @@ module.exports= function initSockets(server) {
 
   let lastSrc = null;
 
+  const TICK_MS = 250;
+  const timerInterval = setInterval(() => {
+    const elapsedSec = timer.getElapsedTime() / 1000;
+    io.emit('timer', elapsedSec);
+  }, TICK_MS);
+
   io.on('connection', (socket) => {
     console.log('a user connected');
-    timer.startStopwatch();
     socket.on('play', () => {
       console.log('play');
       timer.startStopwatch();
@@ -51,6 +56,14 @@ module.exports= function initSockets(server) {
     socket.on('reset', () => {
       console.log('reset');
       timer.resetStopwatch();
+      timer.startStopwatch();
+    })
+
+    socket.on('stop', () => {
+      console.log('stop')
+      timer.resetStopwatch();
+      io.emit('src', lastSrc, 0);
+      io.emit('pause');
     })
 
     socket.on('disconnect', () => {
