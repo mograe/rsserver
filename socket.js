@@ -63,7 +63,10 @@ module.exports= function initSockets(server) {
       console.log('stop')
       timer.resetStopwatch();
       io.emit('src', lastSrc, 0);
-      io.emit('pause');
+      setTimeout(() => {
+        io.emit('pause');
+      }, 300);
+      
     })
 
     socket.on('disconnect', () => {
