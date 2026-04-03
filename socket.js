@@ -18,6 +18,35 @@ module.exports= function initSockets(server) {
     io.emit('timer', elapsedSec);
   }, TICK_MS);
 
+
+  // Храним состояние клиентов
+const clientStates = new Map();
+
+/**
+ * Сколько сейчас активных просмотров:
+ * пользователь подключён как viewer и не в AFK
+ */
+  function getActiveViewerCount() {
+    let count = 0;
+
+    for (const state of clientStates.values()) {
+      if (state.isUser && !state.isAfk) {
+        count++;
+      }
+    }
+
+    return count;
+  }
+
+  /**
+   * Отправить всем актуальное число просмотров
+   */
+  function broadcastViewerCount() {
+    const count = getActiveViewerCount();
+    io.emit("viewerCount", count);
+    console.log("Active viewers:", count);
+  }
+
   io.on('connection', (socket) => {
     console.log('a user connected');
     socket.on('play', () => {
@@ -66,8 +95,58 @@ module.exports= function initSockets(server) {
       io.emit('src', lastSrc, 0);
     })
 
+      // начальное состояние сокета
+    clientStates.set(socket.id, {
+      isUser: false,
+      isAfk: false,
+    });
+
+    socket.on("iamuser", () => {
+      const state = clientStates.get(socket.id);
+      if (!state) return;
+
+      // пользователь стал viewer
+      state.isUser = true;
+      state.isAfk = false;
+
+      clientStates.set(socket.id, state);
+
+      console.log(`iamuser: ${socket.id}`);
+      broadcastViewerCount();
+    });
+
+    socket.on("EnterAfk", () => {
+      const state = clientStates.get(socket.id);
+      if (!state) return;
+
+      // если это viewer, переводим в afk
+      if (state.isUser && !state.isAfk) {
+        state.isAfk = true;
+        clientStates.set(socket.id, state);
+
+        console.log(`EnterAfk: ${socket.id}`);
+        broadcastViewerCount();
+      }
+    });
+
+  socket.on("ExitAfk", () => {
+    const state = clientStates.get(socket.id);
+    if (!state) return;
+
+    // если это viewer и он был afk, возвращаем в active
+    if (state.isUser && state.isAfk) {
+      state.isAfk = false;
+      clientStates.set(socket.id, state);
+
+      console.log(`ExitAfk: ${socket.id}`);
+      broadcastViewerCount();
+    }
+  });
+
     socket.on('disconnect', () => {
       console.log('user disconnected');
+      clientStates.delete(socket.id);
+      broadcastViewerCount();
     })
   });
 
