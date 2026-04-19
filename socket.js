@@ -1,7 +1,7 @@
 const { Server } = require("socket.io");
-const timer = require("./timer.js")
+const timer = require("./timer.js");
 
-module.exports= function initSockets(server) { 
+module.exports = function initSockets(server) {
   const io = new Server(server, {
     cors: {
       origin: "*",
@@ -9,23 +9,30 @@ module.exports= function initSockets(server) {
     },
   });
 
-
   let lastSrc = null;
+  let videoInfo = { currentTime: 0, duration: 0 };
 
   const TICK_MS = 250;
+  const AFK_THRESHOLD = 0.4;
+
   const timerInterval = setInterval(() => {
     const elapsedSec = timer.getElapsedTime() / 1000;
-    io.emit('timer', elapsedSec);
+    io.emit("timer", elapsedSec);
   }, TICK_MS);
 
+  const clientStates = new Map();
+  const movieHistory = [];
 
-  // Храним состояние клиентов
-const clientStates = new Map();
+  /**
+   * Активная сессия фильма.
+   * Начинается на src_js и завершается на следующем src_js или stop.
+   */
+  let currentMovieSession = null;
 
-/**
- * Сколько сейчас активных просмотров:
- * пользователь подключён как viewer и не в AFK
- */
+  function now() {
+    return Date.now();
+  }
+
   function getActiveViewerCount() {
     let count = 0;
 
@@ -38,80 +45,194 @@ const clientStates = new Map();
     return count;
   }
 
-  /**
-   * Отправить всем актуальное число просмотров
-   */
   function broadcastViewerCount() {
     const count = getActiveViewerCount();
     io.emit("viewerCount", count);
     console.log("Active viewers:", count);
   }
 
-  io.on('connection', (socket) => {
-    console.log('a user connected');
-    socket.on('play', () => {
-      console.log('play');
-      timer.startStopwatch();
-      io.emit('play');
-    })
+  function openMovieSessionForViewer(state, startedAt = now()) {
+    if (!currentMovieSession) return;
+    if (!state.isUser) return;
 
-    socket.on('pause', () => {
-      console.log('pause');
-      timer.stopStopwatch();
-      io.emit('pause');
-    })
+    state.movieSessionStartedAt = startedAt;
+    state.movieSessionAfkMs = 0;
+    state.movieSessionAfkStartedAt = state.isAfk ? startedAt : null;
+  }
 
-    socket.on('src_js', (src) => {
-      console.log(src);
-      console.log(timer.getElapsedTime());
-      lastSrc = src;
-      io.emit('src', src, timer.getElapsedTime()/1000);
-    })
+  function closeMovieSessionForViewer(state, endedAt = now()) {
+    if (!state) return null;
+    if (!state.isUser) return null;
+    if (state.movieSessionStartedAt == null) return null;
 
-    socket.on('send-info', (current, duration) => {
-      videoInfo = {currentTime: current, duration: duration};
-      io.emit('get-info', videoInfo);
-    })
+    let afkMs = state.movieSessionAfkMs || 0;
 
-    socket.on('iamuser', () => {
-      console.log('iamuser');
-      io.emit('user-is-connected');
+    if (state.isAfk && state.movieSessionAfkStartedAt != null) {
+      afkMs += endedAt - state.movieSessionAfkStartedAt;
+    }
 
-      if (lastSrc) {
-        socket.emit('src', lastSrc, timer.getElapsedTime()/1000);
+    const totalMs = Math.max(0, endedAt - state.movieSessionStartedAt);
+    const afkRatio = totalMs > 0 ? afkMs / totalMs : 0;
+    const counted = totalMs > 0 && afkRatio < AFK_THRESHOLD;
+
+    const result = {
+      socketId: state.socketId,
+      totalMs,
+      afkMs,
+      afkRatio,
+      counted,
+    };
+
+    state.movieSessionStartedAt = null;
+    state.movieSessionAfkMs = 0;
+    state.movieSessionAfkStartedAt = null;
+
+    return result;
+  }
+
+  function finalizeCurrentMovieSession(endedAt = now(), reason = "unknown") {
+    if (!currentMovieSession) return null;
+
+    for (const state of clientStates.values()) {
+      const result = closeMovieSessionForViewer(state, endedAt);
+      if (result) {
+        currentMovieSession.participants.push(result);
       }
-    })
+    }
 
-    socket.on('reset', () => {
-      console.log('reset');
-      timer.resetStopwatch();
-      timer.startStopwatch();
-    })
+    const participants = currentMovieSession.participants;
+    const countedViewers = participants.filter((p) => p.counted).length;
+    const droppedByAfk = participants.filter((p) => !p.counted).length;
 
-    socket.on('stop', () => {
-      console.log('stop')
-      timer.resetStopwatch();
-      timer.startStopwatch();
-      io.emit('src', lastSrc, 0);
-    })
+    const summary = {
+      moviePath: currentMovieSession.moviePath,
+      startedAt: currentMovieSession.startedAt,
+      endedAt,
+      reason, // "next_movie" | "stop" | ...
+      totalParticipants: participants.length,
+      countedViewers,
+      droppedByAfk,
+      participants,
+    };
 
-      // начальное состояние сокета
+    movieHistory.push(summary);
+
+    console.log("Movie session finalized:", {
+      moviePath: summary.moviePath,
+      reason: summary.reason,
+      totalParticipants: summary.totalParticipants,
+      countedViewers: summary.countedViewers,
+      droppedByAfk: summary.droppedByAfk,
+    });
+
+    io.emit("movieStats", summary);
+
+    currentMovieSession = null;
+    return summary;
+  }
+
+  function startNewMovieSession(moviePath) {
+    const startedAt = now();
+
+    finalizeCurrentMovieSession(startedAt, "next_movie");
+
+    currentMovieSession = {
+      moviePath,
+      startedAt,
+      participants: [],
+    };
+
+    for (const state of clientStates.values()) {
+      if (state.isUser) {
+        openMovieSessionForViewer(state, startedAt);
+      }
+    }
+
+    console.log("New movie session started:", moviePath);
+  }
+
+  function enterAfk(state, startedAt = now()) {
+    if (!state) return;
+    if (!state.isUser) return;
+    if (state.isAfk) return;
+
+    state.isAfk = true;
+
+    if (state.movieSessionStartedAt != null && state.movieSessionAfkStartedAt == null) {
+      state.movieSessionAfkStartedAt = startedAt;
+    }
+  }
+
+  function exitAfk(state, endedAt = now()) {
+    if (!state) return;
+    if (!state.isUser) return;
+    if (!state.isAfk) return;
+
+    if (state.movieSessionStartedAt != null && state.movieSessionAfkStartedAt != null) {
+      state.movieSessionAfkMs += endedAt - state.movieSessionAfkStartedAt;
+      state.movieSessionAfkStartedAt = null;
+    }
+
+    state.isAfk = false;
+  }
+
+  io.on("connection", (socket) => {
+    console.log("a user connected");
+
     clientStates.set(socket.id, {
+      socketId: socket.id,
       isUser: false,
       isAfk: false,
+      movieSessionStartedAt: null,
+      movieSessionAfkMs: 0,
+      movieSessionAfkStartedAt: null,
+    });
+
+    socket.on("play", () => {
+      console.log("play");
+      timer.startStopwatch();
+      io.emit("play");
+    });
+
+    socket.on("pause", () => {
+      console.log("pause");
+      timer.stopStopwatch();
+      io.emit("pause");
+    });
+
+    socket.on("src_js", (src) => {
+      console.log("src_js:", src);
+      console.log("elapsed:", timer.getElapsedTime());
+
+      startNewMovieSession(src);
+
+      lastSrc = src;
+      io.emit("src", src, timer.getElapsedTime() / 1000);
+    });
+
+    socket.on("send-info", (current, duration) => {
+      videoInfo = { currentTime: current, duration: duration };
+      io.emit("get-info", videoInfo);
     });
 
     socket.on("iamuser", () => {
       const state = clientStates.get(socket.id);
       if (!state) return;
 
-      // пользователь стал viewer
       state.isUser = true;
       state.isAfk = false;
 
-      clientStates.set(socket.id, state);
+      if (currentMovieSession && state.movieSessionStartedAt == null) {
+        openMovieSessionForViewer(state);
+      }
 
       console.log(`iamuser: ${socket.id}`);
+      io.emit("user-is-connected");
+
+      if (lastSrc) {
+        socket.emit("src", lastSrc, timer.getElapsedTime() / 1000);
+      }
+
       broadcastViewerCount();
     });
 
@@ -119,36 +240,60 @@ const clientStates = new Map();
       const state = clientStates.get(socket.id);
       if (!state) return;
 
-      // если это viewer, переводим в afk
       if (state.isUser && !state.isAfk) {
-        state.isAfk = true;
-        clientStates.set(socket.id, state);
-
+        enterAfk(state);
         console.log(`EnterAfk: ${socket.id}`);
         broadcastViewerCount();
       }
     });
 
-  socket.on("ExitAfk", () => {
-    const state = clientStates.get(socket.id);
-    if (!state) return;
+    socket.on("ExitAfk", () => {
+      const state = clientStates.get(socket.id);
+      if (!state) return;
 
-    // если это viewer и он был afk, возвращаем в active
-    if (state.isUser && state.isAfk) {
-      state.isAfk = false;
-      clientStates.set(socket.id, state);
+      if (state.isUser && state.isAfk) {
+        exitAfk(state);
+        console.log(`ExitAfk: ${socket.id}`);
+        broadcastViewerCount();
+      }
+    });
 
-      console.log(`ExitAfk: ${socket.id}`);
-      broadcastViewerCount();
-    }
-  });
+    socket.on("reset", () => {
+      console.log("reset");
+      timer.resetStopwatch();
+      timer.startStopwatch();
+    });
 
-    socket.on('disconnect', () => {
-      console.log('user disconnected');
+    socket.on("stop", () => {
+      console.log("stop");
+
+      // Финализируем текущий показ и отправляем movieStats
+      finalizeCurrentMovieSession(now(), "stop");
+
+      timer.resetStopwatch();
+      timer.startStopwatch();
+
+      if (lastSrc) {
+        io.emit("src", lastSrc, 0);
+      }
+    });
+
+    socket.on("disconnect", () => {
+      console.log("user disconnected");
+
+      const state = clientStates.get(socket.id);
+
+      if (state && currentMovieSession) {
+        const result = closeMovieSessionForViewer(state, now());
+        if (result) {
+          currentMovieSession.participants.push(result);
+        }
+      }
+
       clientStates.delete(socket.id);
       broadcastViewerCount();
-    })
+    });
   });
 
   return io;
-  };
+};   
