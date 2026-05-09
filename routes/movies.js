@@ -1,95 +1,103 @@
-const { count } = require('console');
-const express = require('express');
-const fs = require("fs/promises")
-const path = require('path');
+const express = require("express");
+const fs = require("fs");
+const path = require("path");
 
-const MOVIES_PATH = path.join(process.cwd(), "movies.json")
-
-async function readMovies(params) {
-    try {
-        const raw = await fs.readFile(MOVIES_PATH, "utf-8");
-        const data = JSON.parse(raw);
-        return Array.isArray(data) ? data : [];
-    } catch (err) {
-        return [];
-    }
-}
-
-async function writeMovies(movies) {
-    await fs.writeFile(MOVIES_PATH, JSON.stringify(movies, null, 2), "utf-8");
-}
-
-function normalizeMovie(movie) {
-    if (!movie) return null;
-
-
-
-    const id = String(movie.id ?? "").trim();
-    const title = String(movie.title ?? "").trim();
-    const length = Number(movie.length ?? 0);
-
-    if (!id || !title || !Number.isFinite(length) || length <= 0) return null;
-
-    const thumbUri = movie.thumbUri ? String(movie.thumbUri).trim() : undefined;
-    const videoUri = movie.videoUri ? String(movie.videoUri).trim() : undefined;
-
-    const normalized = {id, title, length};
-    if (thumbUri) normalized.thumbUri = thumbUri;
-    if (videoUri) normalized.videoUri = videoUri;
-
-    return normalized;
-}
-
-module.exports = function createMoviesRouter() {
+function createMoviesRouter(options = {}) {
     const router = express.Router();
 
-    router.get("/", async (req, res) => {
-        const movies = await readMovies();
+    const {
+        moviesDbPath = path.join(__dirname, "..", "movies.json")
+    } = options;
+
+    function ensureMoviesDbExists() {
+        if (!fs.existsSync(moviesDbPath)) {
+            fs.writeFileSync(moviesDbPath, JSON.stringify([], null, 2), "utf-8");
+        }
+    }
+
+    function readMovies() {
+        ensureMoviesDbExists();
+
+        try {
+            const raw = fs.readFileSync(moviesDbPath, "utf-8");
+
+            if (!raw.trim()) {
+                return [];
+            }
+
+            const data = JSON.parse(raw);
+
+            if (Array.isArray(data)) {
+                return data;
+            }
+
+            if (Array.isArray(data.movies)) {
+                return data.movies;
+            }
+
+            return [];
+        } catch (error) {
+            console.error("[MOVIES] Failed to read movies DB:", error);
+            return [];
+        }
+    }
+
+    function toPublicMovie(movie) {
+        return {
+            id: movie.id,
+            title: movie.title,
+
+            // Для совместимости со старым UI
+            length: movie.length,
+            minutes: movie.minutes,
+
+            // Более точная длительность
+            durationSec: movie.durationSec,
+
+            // Видео
+            videoUri: movie.videoUri,
+            type: movie.type || "hls",
+            hls: Boolean(movie.hls),
+
+            // Картинка
+            thumbUri: movie.thumbUri || null
+        };
+    }
+
+    // ------------------------------------------------------------
+    // GET /api/movies
+    // Публичный список фильмов для сайта / клиента / Unity
+    // ------------------------------------------------------------
+
+    router.get("/", (req, res) => {
+        const movies = readMovies()
+            .map(toPublicMovie)
+            .filter(movie => movie.id && movie.title);
+
         res.json(movies);
     });
 
-    router.post("/add", async (req, res) => {
-        const normalized = normalizeMovie(req.body);
-        console.log(normalized);
-        
-        if (!normalized) {
-            return res.status(400).send("Invalid movie");
+    // ------------------------------------------------------------
+    // GET /api/movies/:movieId
+    // Получить один фильм по id
+    // ------------------------------------------------------------
+
+    router.get("/:movieId", (req, res) => {
+        const { movieId } = req.params;
+
+        const movies = readMovies();
+        const movie = movies.find(item => item.id === movieId);
+
+        if (!movie) {
+            return res.status(404).json({
+                error: "Movie not found"
+            });
         }
 
-        const movies = await readMovies();
-
-        const filtered = movies.filter(m => m.id !== normalized.id);
-        filtered.unshift(normalized);
-
-        await writeMovies(filtered);
-        res.json({ok: true});
-    
+        res.json(toPublicMovie(movie));
     });
 
-    router.post("/", async (req, res) => {
-        if (!Array.isArray(req.body)) {
-            return res.status(400).send("Body must be an array");
-        }
-
-        const normalizedList = req.body
-            .map(normalizeMovie)
-            .filter(Boolean);
-
-        await writeMovies(normalizedList);
-        res.json({ok: true, count: normalizedList.length});
-    });
-
-    router.delete("/:id", async (req, res) => {
-        const id = String(req.params.id).trim();
-        if (!id) return res.status(400).send("Invalid id");
-
-        const movies = await readMovies();
-        const next = movies.filter(m => m.id !== id);
-
-        await writeMovies(next);
-        res.json({ok: true});
-    });
-    
     return router;
-
 }
+
+module.exports = createMoviesRouter;

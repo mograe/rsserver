@@ -123,4 +123,8 @@ movies.json
 !static/**
 
 test-video/
+hls/**
+keys_private/**
+static/movie-thumbs/**
+
 
