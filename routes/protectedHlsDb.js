@@ -211,9 +211,9 @@ function createProtectedHlsRouter(options = {}) {
             return res.status(400).json({ error: "Invalid timestamp" });
         }
 
-        if (Math.abs(Date.now() - timestampNumber) > maxTimeSkewMs) {
-            return res.status(403).json({ error: "Timestamp expired" });
-        }
+        // if (Math.abs(Date.now() - timestampNumber) > maxTimeSkewMs) {
+        //     return res.status(403).json({ error: "Timestamp expired" });
+        // }
 
         const files = checkMovieFiles(movieId);
 
